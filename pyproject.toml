@@ -1,0 +1,60 @@
+[project]
+name = "desktoppilot"
+version = "0.1.0"
+description = "Drive any Windows or Linux (X11) desktop app from an AI agent: real UIA / AT-SPI clicks, JSON state, declarative app profiles, per-app plugins."
+requires-python = ">=3.12"
+dependencies = [
+    "pillow>=10.1",
+    "typer>=0.12",
+    "websocket-client>=1.8",
+    # Windows: UI Automation and Win32.
+    "pywin32>=306; sys_platform == 'win32'",
+    "uiautomation>=2.0.20; sys_platform == 'win32'",
+    # Linux (X11): AT-SPI through gi (3.52 builds against girepository-2.0),
+    # and EWMH/XTest through python-xlib.
+    "pygobject>=3.52; sys_platform == 'linux'",
+    "python-xlib>=0.33; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+pilot = "desktoppilot.cli:app"
+
+[project.entry-points.pytest11]
+desktoppilot = "desktoppilot.core.pytest_plugin"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Word's Quit kills its own RPC channel mid-call; faulthandler prints a scary
+# but harmless SEH trace (0x800706BA) for it during session teardown.
+addopts = "-p no:faulthandler"
+markers = [
+    "word: needs a real Word instance (launches and kills Word)",
+    "ui: needs a real desktop app (launches and kills it)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE"]
+# COM and UIA calls fail in ways pywin32 does not model, and a driver that
+# raises during teardown or a tree walk is worse than one that carries on;
+# every broad except in this codebase is deliberate and commented.
+ignore = ["BLE001", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Facades: they re-export the names of the modules they were split into.
+"src/desktoppilot/core/ui.py" = ["F401"]
+"src/desktoppilot/plugins/word/roots.py" = ["F401"]
+"src/desktoppilot/plugins/vscode/codex.py" = ["F401"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/desktoppilot"]

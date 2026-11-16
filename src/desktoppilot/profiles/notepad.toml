@@ -1,0 +1,9 @@
+name = "notepad"
+platforms = ["windows"]
+exe = ['%SystemRoot%\System32\notepad.exe']
+window_class = ["Notepad", "ApplicationFrameWindow"]
+title_strip = [" - Notepad"]
+window_size = [1000, 800]
+launch = "adopt"
+dialogs = "explicit"
+notes = "Windows Notepad."

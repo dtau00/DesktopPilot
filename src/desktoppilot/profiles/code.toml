@@ -1,0 +1,26 @@
+name = "code"
+# Literal strings: Windows paths and TOML escapes do not mix.
+exe = [
+    '%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe',
+    '%ProgramFiles%\Microsoft VS Code\Code.exe',
+]
+# Electron exposes no useful UIA tree until the renderer's accessibility layer
+# is switched on; without this flag the window is one opaque node.
+args = ["--force-renderer-accessibility"]
+window_class = ["Chrome_WidgetWin_1"]
+title_strip = [" - Visual Studio Code"]
+window_size = [1600, 1000]
+ready_timeout = 90
+notes = "Visual Studio Code. Drive by command palette where possible; the DOM-derived tree is wide and flat."
+launch = "adopt"
+dialogs = "explicit"
+# A webview document sits near depth 20, so the default 12 never reaches it.
+depth = 25
+
+# args (--force-renderer-accessibility) apply on Linux too: without it AT-SPI
+# sees one opaque frame as well.
+[linux]
+# The snap, the .deb/.rpm launcher, and the binary itself.
+exe = ["/snap/bin/code", "/usr/bin/code", "/usr/share/code/code"]
+# WM_CLASS class: "Code" from the .deb, "code_code" from the snap.
+window_class = ["Code", "code_code"]

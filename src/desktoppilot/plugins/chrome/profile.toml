@@ -1,0 +1,25 @@
+name = "chrome"
+# Literal strings: Windows paths and TOML escapes do not mix.
+exe = [
+    '%ProgramFiles%\Google\Chrome\Application\chrome.exe',
+    '%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe',
+    '%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe',
+]
+# Without it the page is one opaque node to AT-SPI; Windows turns it on for
+# a UIA client by itself, so there it costs nothing.
+args = ["--force-renderer-accessibility"]
+window_class = ["Chrome_WidgetWin_1"]
+title_strip = [" - Google Chrome"]
+notes = "Google Chrome: its own UI and its pages through the accessibility tree, plus cdp (the DevTools Protocol) once it runs with --remote-debugging-port. An Electron app's profile can extend it for cdp."
+# The user's Chrome, with their sign-ins: join it, never kill it.
+launch = "adopt"
+dialogs = "explicit"
+# A page's controls sit near depth 20, under the tab strip and the toolbar.
+depth = 25
+
+[linux]
+# The binary first: its name is the process image ("chrome"); the
+# google-chrome wrapper script execs it.
+exe = ["/opt/google/chrome/chrome", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome"]
+# WM_CLASS class; the instance part carries the --user-data-dir when one is given.
+window_class = ["Google-chrome"]

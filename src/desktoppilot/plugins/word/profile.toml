@@ -1,0 +1,33 @@
+name = "word"
+platforms = ["windows"]
+# Literal strings: Windows paths and TOML escapes do not mix.
+exe = [
+    'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE',
+    'C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE',
+    'C:\Program Files\Microsoft Office\Office16\WINWORD.EXE',
+    'C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE',
+    '%ProgramFiles%\Microsoft Office\root\Office16\WINWORD.EXE',
+    '%ProgramW6432%\Microsoft Office\root\Office16\WINWORD.EXE',
+]
+# /q suppresses the splash, /n starts with no document so the add-in has
+# loaded before a test opens anything.
+args = ["/q", "/n"]
+window_class = ["OpusApp"]
+title_strip = [" - Word"]
+# Word's own dialogs are not plain message boxes; watching only #32770 is how
+# a modal stays invisible to the tool while it blocks the object model.
+dialog_classes = ["bosa_sdm_msword", "bosa_sdm_Mso96"]
+# DIPs (96-DPI pixels): launch scales them by the display's DPI, so the ribbon
+# lays out the same at every scale.
+window_size = [1600, 1000]
+ready_timeout = 60
+# A run owns the machine's Word: every launch starts from identical state.
+launch = "fresh"
+dialogs = "auto"
+depth = 12
+root_depth = 20
+# A plugin that extends word for a WPF add-in lists the host-window names the
+# add-in gives its task panes, so `pane` finds them (see NOTES.md, Roots):
+#   [options]
+#   pane_hosts = ["MyAddin pane host"]
+notes = "Microsoft Word, over UIA and COM. Roots: app (the Word frame), ribbon, pane[:NAME], backstage, win:NAME (add-in windows), popup."

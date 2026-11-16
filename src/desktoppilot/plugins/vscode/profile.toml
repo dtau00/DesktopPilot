@@ -1,0 +1,5 @@
+name = "vscode"
+# Everything VS Code needs (exe, --force-renderer-accessibility, depth 25,
+# launch = "adopt") comes from the core `code` profile.
+extends = "code"
+notes = "VS Code plus the Codex extension's panel: everything `code` accepts, plus codex. Root: codex (the Codex panel)."
