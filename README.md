@@ -281,6 +281,14 @@ that a cover is meant.
   size fixed at start, but what it draws through DirectComposition (Windows 11
   Notepad's tab strip and status bar, WebView2 panes) records black.
   `--full-screen` and `--region X,Y,W,H` (screen pixels) copy the screen.
+- `--margin L,T,R,B` (or `--margin N`, screen pixels) grows the window's rect,
+  cut to the screen, for a menu or popup drawn past its edge (`target.margin`).
+  The cover check covers the margin; the app's own popups never count. Not
+  with `--full-screen`, `--region` or `--follow`.
+- A `--region` is checked for covers too: another app's window above the
+  app's main window. `pilot desktop`, an app that is not open or minimized,
+  and `--full-screen` (the whole screen is meant) are not checked
+  (`covering: null`).
 - Files go in your Videos folder: no PATH gives `<app>-YYYYMMDD-HHMMSS.mp4`, a
   bare name (`demo.mp4`, or `gif -o demo.gif`) lands there too, and a path with
   a folder part is used as given. `gif` without `-o` writes beside its source.

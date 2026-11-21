@@ -37,6 +37,13 @@ def record_group() -> typer.Typer:
         region: str = typer.Option(
             None, "--region", help="Screen box 'X,Y,W,H' in pixels, not the app's window."
         ),
+        margin: str = typer.Option(
+            None,
+            "--margin",
+            help="Grow the window's rect by 'L,T,R,B' screen pixels (or 'N' on every side), "
+            "cut to the screen, for a menu or popup drawn past its edge; the cover check "
+            "covers the margin too. Not with --full-screen, --region or --follow.",
+        ),
         fps: int = typer.Option(30, "--fps", help="Frames per second."),
         mic: str = typer.Option(
             None,
@@ -59,7 +66,7 @@ def record_group() -> typer.Typer:
             help="Record even if another window covers the area; the agent asks the user first.",
         ),
     ):
-        """Start recording in the background and return once the file is being written. Confirm with the user what to record (which window, the full screen, or a region) unless the request already says so; mic is off unless --mic. By default the window is brought to the front and the screen under its rect at start is recorded: a moved window is not followed, a window on top is in the video (clipped: the rect was cut to the screen). The terminal this runs in is minimized meanwhile and `stop` restores it. A window over the area stops the start: tell the user which, ask whether to close them or continue, and only then rerun with --allow-covered. JSON: path, target, fps, mic, pid, log, minimized_windows, covering - or the Covered error with details.covering."""
+        """Start recording in the background and return once the file is being written. Confirm with the user what to record (which window, the full screen, or a region) unless the request already says so; mic is off unless --mic. By default the window is brought to the front and the screen under its rect at start is recorded: a moved window is not followed, a window on top is in the video (clipped: the rect was cut to the screen; margin: what --margin added). The terminal this runs in is minimized meanwhile and `stop` restores it. Another app's window over the area (the window's, or a --region of an app that is open; never --full-screen) stops the start: tell the user which, ask whether to close them or continue, and only then rerun with --allow-covered. JSON: path, target, fps, mic, pid, log, minimized_windows, covering - or the Covered error with details.covering."""
         destination = given(path_arg, out)
 
         def body():
@@ -74,6 +81,7 @@ def record_group() -> typer.Typer:
                 overwrite=overwrite,
                 follow=follow,
                 allow_covered=allow_covered,
+                margin=margin,
             )
             target = recording.describe(result["target"])
             fallback.record(actx, "record", "record start", f"{result['path']} target={target}")
