@@ -39,8 +39,8 @@ from pathlib import Path
 from ..linux import procs as linux_procs
 from ..linux import recording as linux_recording
 from ..linux import x11
-from . import apps, imaging, paths, ui
-from .errors import Covered, PilotError, Timeout
+from . import apps, imaging, paths, selectors, ui
+from .errors import Covered, NoApp, NotPresent, PilotError, Timeout
 from .native import WINDOWS, win32api, win32con, win32gui, win32process
 from .registry import AppContext
 from .util import wait_until
@@ -165,6 +165,24 @@ def window_rect(frame: imaging.Rect, screen: imaging.Rect) -> tuple[imaging.Rect
     if rect[2] <= 0 or rect[3] <= 0:
         raise PilotError(f"the main window {','.join(map(str, frame))} is off every monitor")
     return rect, rect != tuple(frame)
+
+
+def parse_margin(value: str | None) -> tuple[int, int, int, int] | None:
+    """'L,T,R,B' or one 'N' for every side, in screen pixels, none negative."""
+    if value is None:
+        return None
+    count = 1 if "," not in value else 4
+    sides = imaging._ints(value, count, "--margin", "L,T,R,B or N")
+    if min(sides) < 0:
+        raise PilotError(f"--margin wants no negative side; got {value!r}")
+    return tuple(sides * 4 if count == 1 else sides)
+
+
+def grow(rect: imaging.Rect, margin: tuple[int, int, int, int]) -> imaging.Rect:
+    """`rect` with `margin` (left, top, right, bottom) added round it."""
+    left, top, right, bottom = margin
+    x, y, w, h = rect
+    return x - left, y - top, w + left + right, h + top + bottom
 
 
 def ffmpeg_argv(
@@ -595,7 +613,19 @@ def _main_window(ctx: AppContext):
     return window
 
 
-def _target(window, full_screen: bool, region: str | None, follow: bool) -> dict:
+def _region_owner(ctx: AppContext):
+    """The app's window a --region check measures covers against, or None
+    for no check: `pilot desktop`, or the app not open or minimized."""
+    if ctx.profile is None:
+        return None
+    try:
+        window = ui.resolve_root(selectors.parse("app"), ctx, probe=True)
+    except (NoApp, NotPresent):
+        return None
+    return None if ui.is_minimized(window) else window
+
+
+def _target(window, full_screen: bool, region: str | None, follow: bool, margin=None) -> dict:
     if full_screen:
         return {"kind": "screen", "rect": list(ui.virtual_screen_rect())}
     if region:
@@ -608,8 +638,10 @@ def _target(window, full_screen: bool, region: str | None, follow: bool) -> dict
             raise PilotError("the main window has no title to follow; drop --follow")
         return {"kind": "window", "follow": True, "hwnd": hwnd, "title": title}
     ui.activate(window)
-    rect, clipped = window_rect(ui.capture_origin(window), ui.virtual_screen_rect())
-    return {"kind": "window", "hwnd": hwnd, "title": title, "rect": list(rect), "clipped": clipped}
+    frame = ui.capture_origin(window)
+    rect, clipped = window_rect(grow(frame, margin) if margin else frame, ui.virtual_screen_rect())
+    target = {"kind": "window", "hwnd": hwnd, "title": title, "rect": list(rect)}
+    return target | {"clipped": clipped} | ({"margin": list(margin)} if margin else {})
 
 
 def describe(target: dict) -> str:
@@ -633,13 +665,15 @@ def start(
     overwrite: bool = False,
     follow: bool = False,
     allow_covered: bool = False,
+    margin: str | None = None,
 ) -> dict:
     """Start recording, through a detached supervisor, and return once ffmpeg
     is writing the file. The terminal this runs in is minimized first, so it
-    is not in the video; `stop` restores it. In the default window mode,
-    another app's window over the area refuses the start (Covered) unless
-    `allow_covered`. JSON: path, target, fps, mic, pid, log,
-    minimized_windows, covering (null when not checked)."""
+    is not in the video; `stop` restores it. In the default window mode
+    (grown by `margin`, 'L,T,R,B' or 'N') and with a region, another app's
+    window over the area refuses the start (Covered) unless `allow_covered`.
+    JSON: path, target, fps, mic, pid, log, minimized_windows, covering (null
+    when not checked)."""
     path = state_file(ctx.name)
     current = read_state(path)
     if current is not None and recording(current):
@@ -650,24 +684,37 @@ def start(
         raise PilotError(f"--fps wants a positive number; got {fps}")
     if sum((full_screen, bool(region), follow)) > 1:
         raise PilotError("--full-screen, --region and --follow are mutually exclusive")
+    sides = parse_margin(margin)
+    if sides is not None and (full_screen or region or follow):
+        raise PilotError(
+            "--margin grows the window; it is mutually exclusive with "
+            "--full-screen, --region and --follow"
+        )
     if ctx.profile is None and not region and not follow:
         full_screen = True  # `pilot desktop` has no window of its own: the screen
     target_file = recording_path(ctx.name, out)
     if target_file.exists() and not overwrite:
         raise PilotError(f"{target_file} exists; pass --overwrite or another path")
     ffmpeg = find_ffmpeg()
-    window = None if full_screen or region else _main_window(ctx)
+    if full_screen:
+        window = None
+    elif region:
+        # The app's own windows over a region are what it records.
+        window = _region_owner(ctx)
+    else:
+        window = _main_window(ctx)
     exclude = ui._top_level_handle(window) if window else 0
     # A followed window is copied from its own pixels: nothing on top shows.
     hidden = [] if follow else console_windows(exclude)
     minimized = minimize(hidden)
     try:
-        target = _target(window, full_screen, region, follow)
+        target = _target(window, full_screen, region, follow, sides)
         covering = None
-        if target["kind"] == "window" and not follow:
+        if window and not follow:  # the window, grown by --margin, or a region
             # Still above the activated target: topmost windows, or ones the
-            # activation did not push down.
-            covering = covering_windows(tuple(target["rect"]), target["hwnd"], hidden)
+            # activation did not push down. A popup or menu of the app (its
+            # process) is part of the picture, in the margin too.
+            covering = covering_windows(tuple(target["rect"]), exclude, hidden)
             if covering and not allow_covered:
                 raise Covered(covered_message(covering), {"covering": covering})
         result = _start(ctx, target_file, target, ffmpeg, fps=fps, mic=mic, minimized=minimized)

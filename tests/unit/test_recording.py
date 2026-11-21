@@ -788,12 +788,13 @@ def covered_start(monkeypatch, fake_start):
     window = {"kind": "window", "hwnd": 42, "title": "Notepad", "rect": [0, 0, 990, 795]}
     real_target = recording._target
 
-    def target(main, full_screen, region, follow):
+    def target(main, full_screen, region, follow, margin=None):
         if full_screen or region:
             return real_target(main, full_screen, region, follow)
         return dict(window, clipped=False)
 
     monkeypatch.setattr(recording, "_main_window", lambda ctx: object())
+    monkeypatch.setattr(recording, "_region_owner", lambda ctx: object())
     monkeypatch.setattr(recording.ui, "_top_level_handle", lambda window: 42)
     monkeypatch.setattr(recording, "_target", target)
     monkeypatch.setattr(recording, "covering_windows", lambda rect, below, ignore: [COVER])
@@ -832,6 +833,101 @@ def test_nothing_covering_is_an_empty_list_and_other_modes_are_unchecked(
     assert recording.start(ctx, out=str(tmp_path / "a.mp4"))["covering"] == []
     screen = recording.start(ctx, out=str(tmp_path / "b.mp4"), full_screen=True, overwrite=True)
     assert screen["covering"] is None
+
+
+@pytest.mark.windows("the gdigrab supervisor's process creation flags")
+def test_a_covered_region_refuses_the_start(ctx, tmp_path, covered_start):
+    with pytest.raises(Covered) as err:
+        recording.start(ctx, out=str(tmp_path / "r.mp4"), region="0,0,640,480")
+    assert err.value.details == {"covering": [COVER]}
+
+    result = recording.start(
+        ctx, out=str(tmp_path / "r.mp4"), region="0,0,640,480", allow_covered=True
+    )
+    assert result["covering"] == [COVER]
+    assert result["target"] == {"kind": "region", "rect": [0, 0, 640, 480]}
+
+
+@pytest.mark.windows("the gdigrab supervisor's process creation flags")
+def test_a_region_with_no_app_window_is_unchecked(ctx, tmp_path, covered_start, monkeypatch):
+    """`pilot desktop`, or the app closed or minimized: nothing to measure against."""
+    monkeypatch.setattr(recording, "_region_owner", lambda ctx: None)
+    result = recording.start(ctx, out=str(tmp_path / "r.mp4"), region="0,0,640,480")
+    assert result["covering"] is None
+
+
+def test_the_desktop_has_no_region_owner():
+    desktop = AppContext(name="desktop", profile=None, registry=Registry())
+    assert recording._region_owner(desktop) is None
+
+
+def test_the_apps_own_window_or_popup_over_a_grown_area_is_not_a_cover(zorder):
+    """A menu of the target drawn in the margin, or the app's other window
+    over a region: same process, part of the picture. Another app's is not."""
+    grown = recording.grow(AREA, (0, 0, 300, 0))
+    zorder.add(7, pid=TARGET_PID, rect=(1050, 200, 300, 400))
+    zorder.add(8, pid=3, rect=(1150, 700, 100, 100))
+    zorder.add(TARGET_HWND, pid=TARGET_PID, rect=AREA)
+    assert [w["hwnd"] for w in recording.covering_windows(grown, TARGET_HWND)] == [8]
+
+
+@pytest.mark.parametrize(
+    ("value", "sides"),
+    [("40", (40, 40, 40, 40)), ("0, 10,300,5", (0, 10, 300, 5)), (None, None)],
+)
+def test_a_margin_is_four_sides_or_one_for_all(value, sides):
+    assert recording.parse_margin(value) == sides
+
+
+@pytest.mark.parametrize("value", ["1,2", "a", "1,2,3,4,5", "-1", "0,0,-5,0"])
+def test_a_bad_margin_is_refused(value):
+    with pytest.raises(PilotError, match="--margin"):
+        recording.parse_margin(value)
+
+
+@pytest.mark.parametrize(
+    ("frame", "rect", "clipped"),
+    [
+        ((100, 100, 800, 600), [90, 80, 1110, 640], False),
+        ((1500, 900, 400, 300), [1490, 880, 430, 200], True),
+    ],
+    ids=["inside", "cut-to-the-screen"],
+)
+def test_the_margin_grows_the_window_cut_to_the_screen(monkeypatch, frame, rect, clipped):
+    monkeypatch.setattr(recording.ui, "_top_level_handle", lambda window: 42)
+    monkeypatch.setattr(recording.win32gui, "GetWindowText", lambda hwnd: "Doc")
+    monkeypatch.setattr(recording.ui, "activate", lambda window: None)
+    monkeypatch.setattr(recording.ui, "capture_origin", lambda window: frame)
+    monkeypatch.setattr(recording.ui, "virtual_screen_rect", lambda: (0, 0, 1920, 1080))
+
+    target = recording._target(object(), False, None, False, (10, 20, 300, 20))
+
+    assert target == {"kind": "window", "hwnd": 42, "title": "Doc", "rect": rect} | {
+        "clipped": clipped,
+        "margin": [10, 20, 300, 20],
+    }
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [["--full-screen"], ["--region", "0,0,10,10"], ["--follow"]],
+)
+def test_a_margin_grows_only_the_window(tmp_path, flags):
+    result = runner.invoke(
+        app,
+        [
+            PLAIN_APP,
+            "--no-shot",
+            "record",
+            "start",
+            str(tmp_path / "x.mp4"),
+            "--margin",
+            "5",
+            *flags,
+        ],
+    )
+    assert result.exit_code == 1
+    assert "mutually exclusive" in json.loads(result.output)["message"]
 
 
 def test_the_cli_error_carries_the_covering_windows(tmp_path, covered_start, monkeypatch):
