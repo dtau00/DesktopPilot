@@ -93,6 +93,17 @@ def parents() -> dict[int, int]:
     return found
 
 
+def command_line(pid: int) -> str | None:
+    """The process's arguments joined by spaces (/proc/PID/cmdline is
+    NUL-separated); None when it is gone or unreadable, "" for a kernel
+    thread."""
+    try:
+        raw = (PROC / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return None
+    return " ".join(arg.decode(errors="replace") for arg in raw.split(b"\0") if arg)
+
+
 def _boot_time() -> float:
     for line in (PROC / "stat").read_text().splitlines():
         if line.startswith("btime "):

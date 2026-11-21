@@ -150,3 +150,9 @@ def test_spawn_starts_a_new_session_and_logs_the_output(tmp_path):
     )
     assert proc.wait(timeout=10) == 0
     assert log.read_text().strip() == "True"
+
+
+def test_the_command_line_joins_the_arguments():
+    arguments = Path("/proc/self/cmdline").read_bytes().decode().split("\0")[:-1]
+    assert procs.command_line(ME) == " ".join(arguments)
+    assert procs.command_line(2**22 + 1) is None

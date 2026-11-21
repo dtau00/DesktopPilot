@@ -19,6 +19,7 @@ import json
 import re
 import time
 import urllib.request
+import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from .util import wait_until
 
 TIMEOUT = 30.0
 LIST_TIMEOUT = 5.0
+CHANGE_TIMEOUT = 1.0  # seconds `upload` waits for the input's change event
 PORT_FLAG = re.compile(r"--remote-debugging-port=(\d+)")
 
 # The element's centre after scrolling it into view, or null when nothing
@@ -129,6 +131,44 @@ _FILE_NAMES = """
 })(%s)
 """
 
+
+# A one-shot watch on the file input's input and change events, in the
+# capture phase on window, so it runs before any handler of the page's: one
+# that takes the files and clears the input (GitHub's attach box) would leave
+# nothing to read after. The slot window[key] keeps what the first event saw.
+_WATCH_CHANGE = """
+((selector, key) => {
+  const element = document.querySelector(selector);
+  const slot = {changed: false, names: null};
+  const listener = (event) => {
+    if (event.target !== element) { return; }
+    if (slot.names === null || slot.names.length === 0) {
+      slot.names = Array.from(element.files || [], (file) => file.name);
+    }
+    if (event.type === "change") { slot.changed = true; }
+  };
+  slot.stop = () => {
+    window.removeEventListener("input", listener, true);
+    window.removeEventListener("change", listener, true);
+  };
+  window.addEventListener("input", listener, true);
+  window.addEventListener("change", listener, true);
+  window[key] = slot;
+  return element !== null;
+})(%s, %s)
+"""
+
+
+# What the watch saw: {changed, names}, or null when it is gone (the page
+# navigated). With `stop`, the watch is removed too.
+_SEEN = """
+((key, stop) => {
+  const slot = window[key];
+  if (!slot) { return null; }
+  if (stop) { slot.stop(); delete window[key]; }
+  return {changed: slot.changed, names: slot.names};
+})(%s, %s)
+"""
 
 # Both centres after scrolling each into view, or the selector that matches
 # nothing, has no size, or is outside the viewport once the other is in it.
@@ -677,8 +717,13 @@ class Page:
         does: DOM.setFileInputFiles, after which Chrome fires input and change
         itself. No dialog, no pointer, no window focus, and a hidden input
         (GitHub's attach box) takes them too: there is no visibility check.
-        Every path must exist. JSON: selector, files (absolute paths), count,
-        names (what the input holds after), verified (names are the files')."""
+        Every path must exist. A page may take the files in its change handler
+        and clear the input, so the names are read in that event, by a
+        capture-phase listener that runs before the page's. JSON: selector,
+        files (absolute paths), count, changed (the change event fired), names
+        (what the input held in that event; without one, what it holds after),
+        names_after (what it holds after the page's handlers), verified (names
+        are the files')."""
         paths = [Path(f).expanduser().resolve() for f in files]
         if not paths:
             raise PilotError("upload needs at least one file")
@@ -701,14 +746,36 @@ class Page:
             what = described.get("nodeName", "?").lower()
             raise PilotError(f"{selector!r} is <{what}>, not an input[type=file]")
         absolute = [str(p) for p in paths]
-        self.send("DOM.setFileInputFiles", {"files": absolute, "nodeId": node_id})
-        names = self._script(_FILE_NAMES, selector) or []
+        wanted = [p.name for p in paths]
+        key = f"__pilotUpload_{uuid.uuid4().hex}"
+        self._script(_WATCH_CHANGE, selector, key)
+        seen: dict = {}
+        try:
+            self.send("DOM.setFileInputFiles", {"files": absolute, "nodeId": node_id})
+            # Chrome fires change inside setFileInputFiles; the wait covers one
+            # that comes later. Setting the files the input holds fires none.
+            with contextlib.suppress(Timeout):
+                wait_until(
+                    lambda: (self._script(_SEEN, key, False) or {}).get("changed"),
+                    timeout=CHANGE_TIMEOUT,
+                    interval=SETTLE,
+                    what="the input's change event",
+                )
+        finally:
+            # Never hides the error that got here; a page gone since has no watch left.
+            with contextlib.suppress(PilotError):
+                seen = self._script(_SEEN, key, True) or {}
+        after = self._script(_FILE_NAMES, selector) or []
+        changed = bool(seen.get("changed"))
+        names = seen.get("names") if changed and seen.get("names") is not None else after
         return {
             "selector": selector,
             "files": absolute,
             "count": len(names),
+            "changed": changed,
             "names": names,
-            "verified": names == [p.name for p in paths],
+            "names_after": after,
+            "verified": names == wanted or after == wanted,
         }
 
     def keys(self, keys: str, *, into: str | None = None) -> dict:

@@ -2,7 +2,8 @@
 
 Not a core group of every app: a plugin for a Chromium or Electron app adds
 it (`chrome`, `vscode`). The port is `--port`, else the
-`--remote-debugging-port=N` in the profile's args.
+`--remote-debugging-port=N` on the bound pid's command line (PILOT_<APP>_PID),
+else the one in the profile's args.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from collections.abc import Callable
 
 import typer
 
-from . import cdp
+from . import apps, cdp, procs
 from .commands import app_profile, run_for
 from .errors import PilotError
 from .profiles import Profile
@@ -21,15 +22,29 @@ UPLOAD_FILES = typer.Argument(..., help="Files to attach; each must exist.")
 
 
 def port_of(profile: Profile, port: int | None) -> int:
+    """--port, else the bound pid's own --remote-debugging-port (the binding
+    names one instance, so its port wins over the profile's), else the
+    profile's args."""
     if port is not None:
         return port
+    bound = apps.bound_pid(profile)
+    if bound is not None:
+        found = cdp.port_in([procs.command_line(bound) or ""])
+        if found is not None:
+            return found
     found = cdp.port_in(profile.args)
-    if found is None:
-        raise PilotError(
-            f"{profile.name} opens no debugging port: pass --port, or put "
-            "--remote-debugging-port=N in its profile's args"
-        )
-    return found
+    if found is not None:
+        return found
+    binding = apps.binding_env(profile)
+    why = (
+        f"{binding}={bound} has no --remote-debugging-port=N on its command line, or is gone"
+        if bound is not None
+        else f"{binding} is not set"
+    )
+    raise PilotError(
+        f"{profile.name} opens no debugging port: pass --port, bind a pid started with "
+        f"--remote-debugging-port=N ({why}), or put the flag in its profile's args"
+    )
 
 
 def not_listening(profile: Profile) -> str:
@@ -41,7 +56,12 @@ def not_listening(profile: Profile) -> str:
 
 
 def _port():
-    return typer.Option(None, "--port", help="CDP port (default: the profile's args).")
+    return typer.Option(
+        None,
+        "--port",
+        help="CDP port (default: the --remote-debugging-port of the bound pid, "
+        "PILOT_<APP>_PID, else of the profile's args).",
+    )
 
 
 def _url():
@@ -272,7 +292,7 @@ def cdp_group() -> typer.Typer:
         port: int = _port(),
         timeout: float = _timeout(),
     ):
-        """Put FILES into a file input as the OS file dialog would (DOM.setFileInputFiles); Chrome fires input and change itself. No dialog, no pointer, no window focus, and a hidden input works (GitHub's attach box: `file-attachment input[type=file]`). Every file must exist. JSON: selector, files (absolute paths), count, names (what the input holds after), verified."""
+        """Put FILES into a file input as the OS file dialog would (DOM.setFileInputFiles); Chrome fires input and change itself. No dialog, no pointer, no window focus, and a hidden input works (GitHub's attach box: `file-attachment input[type=file]`). Every file must exist. The names are read in the input's change event, before the page's handlers can clear it. JSON: selector, files (absolute paths), count, changed (the change event fired), names (what the input held in that event, else after), names_after (what it holds after), verified (names are the files')."""
         run_for(
             ctx,
             "cdp upload",
