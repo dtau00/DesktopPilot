@@ -262,7 +262,8 @@ The core `cdp` group (`core/cmd_cdp.py`, the same as `pilot chrome cdp`):
 `targets`, `target`, `eval`, `click`, `hover`, `type`, `keys`, `set-value`,
 `upload`, `scroll`, `drag`, `navigate`, `read`, `wait`, `shot`, `console`.
 Page work: `cdp` first; `ui` and the real pointer only for what is not in a
-page (native menus, OS dialogs) or what `cdp` cannot do. The port is `--port`, else a `--remote-debugging-port=N` in the
+page (native menus, OS dialogs) or what `cdp` cannot do. The port is `--port`, else the `--remote-debugging-port=N` on the
+command line of the pid `PILOT_VSCODE_PID` binds, else one in the
 profile's args. The user's VS Code never has one: it runs already, so a
 launch adopts it and the flag never reaches it. A scratch profile that
 extends `vscode` and adds the flag (and its own `--user-data-dir`) does.

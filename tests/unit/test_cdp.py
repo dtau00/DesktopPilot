@@ -7,12 +7,14 @@ import io
 import json
 import ntpath
 import re
+import subprocess
+import sys
 import urllib.error
 
 import pytest
 from typer.testing import CliRunner
 
-from desktoppilot.core import cdp, cmd_cdp, commands
+from desktoppilot.core import cdp, cmd_cdp, commands, procs
 from desktoppilot.core.errors import Ambiguous, NoTarget, PilotError, Timeout
 from desktoppilot.core.profiles import Profile
 from desktoppilot.core.registry import Registry
@@ -256,12 +258,64 @@ def tree_for(profile: Profile):
     return commands.build_app_cli(profile.name, profile, reg)
 
 
-def test_the_group_takes_the_port_from_the_profile_args():
+def test_the_group_takes_the_port_from_the_profile_args(monkeypatch):
+    monkeypatch.delenv("PILOT_CHROMEISH_PID", raising=False)
+    monkeypatch.delenv("PILOT_PLAIN_PID", raising=False)
     profile = Profile(name="chromeish", args=["--remote-debugging-port=9555"])
     assert cmd_cdp.port_of(profile, None) == 9555
     assert cmd_cdp.port_of(profile, 9000) == 9000
-    with pytest.raises(PilotError, match="opens no debugging port"):
+    with pytest.raises(PilotError, match="opens no debugging port.*PILOT_PLAIN_PID is not set"):
         cmd_cdp.port_of(Profile(name="plain"), None)
+
+
+def command_lines(monkeypatch, lines: dict) -> list[int]:
+    """procs.command_line answers from `lines` (None for any other pid);
+    returns the pids it was asked for."""
+    asked: list[int] = []
+
+    def command_line(pid):
+        asked.append(pid)
+        return lines.get(pid)
+
+    monkeypatch.setattr(cmd_cdp.procs, "command_line", command_line)
+    return asked
+
+
+def test_a_bound_pid_gives_its_own_port_before_the_profile_args(monkeypatch):
+    monkeypatch.setenv("PILOT_CHROME_ISH_PID", "4242")
+    line = '"C:\\chrome.exe" --user-data-dir=x --remote-debugging-port=9333 about:blank'
+    asked = command_lines(monkeypatch, {4242: line})
+    profile = Profile(name="chrome-ish", args=["--remote-debugging-port=9555"])
+    assert cmd_cdp.port_of(profile, None) == 9333
+    assert asked == [4242]
+    assert cmd_cdp.port_of(Profile(name="chrome-ish"), None) == 9333
+    assert cmd_cdp.port_of(profile, 9000) == 9000
+    assert asked == [4242, 4242]
+
+
+@pytest.mark.parametrize("line", [None, "chrome.exe --no-first-run"], ids=["gone", "no flag"])
+def test_a_bound_pid_without_a_port_falls_back_then_names_both_ways(monkeypatch, line):
+    monkeypatch.setenv("PILOT_CHROMEISH_PID", "4242")
+    command_lines(monkeypatch, {4242: line})
+    with_args = Profile(name="chromeish", args=["--remote-debugging-port=9555"])
+    assert cmd_cdp.port_of(with_args, None) == 9555
+    with pytest.raises(PilotError) as raised:
+        cmd_cdp.port_of(Profile(name="chromeish"), None)
+    message = str(raised.value)
+    assert "pass --port" in message
+    assert "PILOT_CHROMEISH_PID=4242 has no --remote-debugging-port=N" in message
+
+
+def test_the_command_line_of_a_live_process_names_its_port():
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()", "--remote-debugging-port=9444"],
+        stdin=subprocess.PIPE,
+    )
+    try:
+        assert cdp.port_in([procs.command_line(child.pid) or ""]) == 9444
+    finally:
+        child.communicate(timeout=10)
+    assert procs.command_line(child.pid) is None
 
 
 def test_the_group_says_how_to_open_the_port(monkeypatch):
@@ -477,6 +531,10 @@ class FileInputDom:
     def __init__(self, node_name="INPUT", attributes=("type", "file"), found=True):
         self.node_name, self.attributes, self.found = node_name, list(attributes), found
         self.names: list[str] = []
+        self.clears = False  # the page's change handler empties the input (GitHub)
+        self.fires = True  # change fires (setting the files it holds fires none)
+        self.slot: dict | None = None
+        self.scripts: list[str] = []
 
     def __call__(self, message):
         method, params = message["method"], message["params"]
@@ -489,23 +547,49 @@ class FileInputDom:
             result = {"node": {"nodeName": self.node_name, "attributes": self.attributes}}
         elif method == "DOM.setFileInputFiles":
             self.names = [ntpath.basename(f) for f in params["files"]]
+            if self.fires and self.slot is not None:
+                self.slot = {"changed": True, "names": list(self.names)}
+            if self.clears:
+                self.names = []
         elif method == "Runtime.evaluate":
-            result = {"result": {"value": self.names}}
+            result = {"result": {"value": self.evaluate(params["expression"])}}
         return {"id": message["id"], "result": result}
+
+    def evaluate(self, expression):
+        """The page side of the scripts `upload` runs: the watch, its slot
+        (taken down with stop=true), the input's names."""
+        name = next(
+            n
+            for n in ("_WATCH_CHANGE", "_SEEN", "_FILE_NAMES")
+            if expression.startswith(getattr(cdp, n).split("%s")[0])
+        )
+        self.scripts.append(name)
+        if name == "_WATCH_CHANGE":
+            self.slot = {"changed": False, "names": None}
+            return True
+        if name == "_SEEN":
+            seen = self.slot
+            if expression.rstrip().endswith("true)"):
+                self.slot = None
+            return seen
+        return self.names
 
 
 def test_upload_sets_the_files_by_absolute_path_and_reads_them_back(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a.png").write_bytes(b"a")
     (tmp_path / "b.txt").write_text("b")
-    page, socket = page_with(monkeypatch, FileInputDom(attributes=["class", "x", "TYPE", "File"]))
+    dom = FileInputDom(attributes=["class", "x", "TYPE", "File"])
+    page, socket = page_with(monkeypatch, dom)
     found = page.upload("file-attachment input[type=file]", ["a.png", tmp_path / "b.txt"])
     absolute = [str((tmp_path / "a.png").resolve()), str((tmp_path / "b.txt").resolve())]
     assert found == {
         "selector": "file-attachment input[type=file]",
         "files": absolute,
         "count": 2,
+        "changed": True,
         "names": ["a.png", "b.txt"],
+        "names_after": ["a.png", "b.txt"],
         "verified": True,
     }
     methods = [m["method"] for m in socket.sent]
@@ -513,11 +597,48 @@ def test_upload_sets_the_files_by_absolute_path_and_reads_them_back(monkeypatch,
         "DOM.getDocument",
         "DOM.querySelector",
         "DOM.describeNode",
+        "Runtime.evaluate",
         "DOM.setFileInputFiles",
         "Runtime.evaluate",
+        "Runtime.evaluate",
+        "Runtime.evaluate",
     ]
+    # Watch before the files go in; one look (change fires inside the call),
+    # the watch comes down, then the input is read.
+    assert dom.scripts == ["_WATCH_CHANGE", "_SEEN", "_SEEN", "_FILE_NAMES"]
+    assert dom.slot is None
     assert socket.sent[1]["params"] == {"nodeId": 1, "selector": "file-attachment input[type=file]"}
-    assert socket.sent[3]["params"] == {"files": absolute, "nodeId": 5}
+    assert socket.sent[4]["params"] == {"files": absolute, "nodeId": 5}
+
+
+def test_upload_is_verified_by_the_change_event_when_the_page_clears_the_input(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "a.png").write_bytes(b"a")
+    dom = FileInputDom()
+    dom.clears = True
+    page, _ = page_with(monkeypatch, dom)
+    found = page.upload("#f", [tmp_path / "a.png"])
+    assert found["changed"] is True
+    assert found["names"] == ["a.png"] and found["count"] == 1
+    assert found["names_after"] == []
+    assert found["verified"] is True
+    assert dom.slot is None
+
+
+def test_upload_without_a_change_event_reads_the_input_after(monkeypatch, tmp_path):
+    (tmp_path / "a.png").write_bytes(b"a")
+    monkeypatch.setattr(cdp, "CHANGE_TIMEOUT", 0)
+    dom = FileInputDom()
+    dom.fires = False
+    page, _ = page_with(monkeypatch, dom)
+    found = page.upload("#f", [tmp_path / "a.png"])
+    assert found["changed"] is False
+    assert found["names"] == found["names_after"] == ["a.png"]
+    assert found["verified"] is True
+    assert dom.slot is None
+    dom.clears = True
+    assert page.upload("#f", [tmp_path / "a.png"])["verified"] is False
 
 
 def test_upload_of_a_missing_file_sends_nothing(monkeypatch, tmp_path):

@@ -177,7 +177,8 @@ cdp keys     KEYS [--into CSS]       (`ui keys` syntax as page key events; {Ctrl
 cdp scroll   [CSS] [--by DX,DY | --to top|bottom]   (the page's wheel; default --by 0,100)
 cdp drag     FROM_CSS TO_CSS [--steps N]   (page pointer; a draggable=true drag is dropped as HTML5)
 cdp navigate URL [--wait load|domcontentloaded|none]   (fails with Chrome's reason, e.g. ERR_NAME_NOT_RESOLVED)
-cdp upload   CSS FILE [FILE...]      (an input[type=file], hidden too; no dialog, no pointer, no focus)
+cdp upload   CSS FILE [FILE...]      (an input[type=file], hidden too; no dialog, no pointer, no focus;
+                                      names read in its change event, before the page clears it)
 cdp console  [--level error|warning|info|all] [--reload] [--for S]
 cdp eval|read|wait|shot ... [--color-scheme dark|light]   (for that command only)
 ```
@@ -205,7 +206,9 @@ app: roots `desktop`, `win:NAME`, `focus`, `dialog`, and no `app` group.
 and its descendants only, so `app status`, `app resize`, `app kill`, the
 `ui` roots and `dialogs` never touch another instance of the same image.
 `app status` says so in `bound_pid` and `bound_by`; a bound `app launch`
-only adopts.
+only adopts. Bound, `cdp` takes its port from the `--remote-debugging-port=N`
+on that pid's command line: `--port`, else the bound pid's flag, else the
+profile's args.
 On both platforms, `app launch` starts the app without
 `ELECTRON_RUN_AS_NODE`: VS Code's terminal and extension host set it, and an
 Electron app started with it runs as plain Node.

@@ -50,7 +50,7 @@ commands:
 
     pilot chrome scratch start [--port N] [--url U] [--dir D]
     export PILOT_CHROME_PID=<pid>      # the `bind` it printed
-    pilot chrome cdp targets --port <port>
+    pilot chrome cdp targets           # the port comes from the bound pid
     pilot chrome app resize 1280 800   # bound: the scratch window only
     pilot chrome scratch stop <pid>
 
@@ -63,6 +63,10 @@ commands:
   descendants: `app status`, `app resize`, `app kill`, the `ui` roots and
   `dialogs` see the scratch Chrome only. `app resize --pid N` or `--hwnd H`
   picks a window without a binding.
+- Bound, `cdp` needs no `--port`: it reads the `--remote-debugging-port=N`
+  on the bound pid's command line (any app bound to a pid started with the
+  flag, an Electron one too). `--port` still wins; the profile's args come
+  last. A bound pid that is gone or has no flag falls through to them.
 - `stop` kills that pid's tree, never Chrome by name, and removes the folder
   `start` made (one given with `--dir` stays). It refuses a pid `start` did
   not record.
@@ -88,7 +92,13 @@ other plugins use too.
   and `change`. No dialog, no pointer, the window may be behind others, and
   a hidden input works: GitHub's attach box is
   `file-attachment input[type=file]`. Every file must exist; the paths go in
-  absolute. Read back: `names`, `verified`.
+  absolute. A page may take the files in its `change` handler and clear the
+  input (GitHub's does), so a capture-phase listener on `window`, set before
+  and removed after, reads them in that event. `changed`: the event fired;
+  `names`: what the input held in it (else after); `names_after`: what it
+  holds after the page's handlers (`[]` on GitHub); `verified`: `names` are
+  the files'. Setting the files an input already holds fires no change: the
+  call waits a second for it, then reads `names_after`.
 - `keys KEYS [--into SELECTOR]`: `Input.dispatchKeyEvent` in `ui keys`
   syntax (`core/keysyntax.py`, the Linux emulation's parser too): `abc`,
   `{Enter}`, `{Shift}{Tab}`, `{Ctrl}(ac)`, `{Down 3}`. A key that types is a

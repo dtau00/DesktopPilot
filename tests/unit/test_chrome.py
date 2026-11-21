@@ -24,7 +24,8 @@ def test_the_profile_on_each_platform(monkeypatch, platform, image, window_class
     assert profile.title_strip == [" - Google Chrome"]
 
 
-def test_chrome_opens_no_port_of_its_own():
+def test_chrome_opens_no_port_of_its_own(monkeypatch):
+    monkeypatch.delenv("PILOT_CHROME_PID", raising=False)
     with pytest.raises(Exception, match="opens no debugging port"):
         cmd_cdp.port_of(profiles.load("chrome"), None)
 
