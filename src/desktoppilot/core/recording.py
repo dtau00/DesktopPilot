@@ -39,7 +39,7 @@ from pathlib import Path
 from ..linux import procs as linux_procs
 from ..linux import recording as linux_recording
 from ..linux import x11
-from . import imaging, paths, ui
+from . import apps, imaging, paths, ui
 from .errors import Covered, PilotError, Timeout
 from .native import WINDOWS, win32api, win32con, win32gui, win32process
 from .registry import AppContext
@@ -57,6 +57,17 @@ INSTALL_HINT = (
 )
 # The terminal `pilot` runs in: Windows Terminal, and a plain conhost.
 CONSOLE_CLASSES = ("CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowClass")
+# The parent walk stops at the session's shell: its windows are the desktop.
+SESSION_PROCESSES = {
+    "explorer.exe",
+    "sihost.exe",
+    "svchost.exe",
+    "services.exe",
+    "wininit.exe",
+    "winlogon.exe",
+}
+# VS Code's integrated terminal is part of the editor, as on Linux.
+EDITOR_PROCESSES = {"code.exe", "code - insiders.exe"}
 # Shell windows that sit above everything and are not in anyone's way.
 SHELL_CLASSES = (
     "Shell_TrayWnd",
@@ -378,8 +389,10 @@ def console_windows(exclude: int) -> list[int]:
     recording: our console window and its root owner (the Windows Terminal
     window behind a ConPTY), and the foreground window when it is a console.
     Only visible, unminimized windows with a size that are not the target:
-    the ConPTY's own console window is "visible" at 0x0. On Linux, a terminal
-    emulator's window above this process (linux/recording.py)."""
+    the ConPTY's own console window is "visible" at 0x0. When none shows,
+    the windows of the app that launched us with no console (the Claude
+    desktop app), never VS Code's. On Linux, a terminal emulator's window
+    above this process (linux/recording.py)."""
     if not WINDOWS:
         return linux_recording.terminal_windows(exclude)
     candidates = []
@@ -389,6 +402,14 @@ def console_windows(exclude: int) -> list[int]:
     foreground = win32gui.GetForegroundWindow()
     if foreground and win32gui.GetClassName(foreground) in CONSOLE_CLASSES:
         candidates.append(foreground)
+    found = _showing(candidates, exclude)
+    # No terminal on screen: an app with no console launched us (one
+    # Windows Terminal process owns every WT window, so only then).
+    return found or _showing(_launcher_windows(), exclude)
+
+
+def _showing(candidates: list[int], exclude: int) -> list[int]:
+    """Visible, unminimized windows with a size, once each, not `exclude`."""
     found: list[int] = []
     for hwnd in candidates:
         if not hwnd or hwnd == exclude or hwnd in found:
@@ -398,6 +419,32 @@ def console_windows(exclude: int) -> list[int]:
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
         if right > left and bottom > top:
             found.append(hwnd)
+    return found
+
+
+def _launcher_windows() -> list[int]:
+    """Top-level windows of our ancestor processes, up to the session's
+    shell. An unnamed (denied) ancestor ends the walk too."""
+    parents = apps._parents()
+    owners, seen = set(), {os.getpid()}
+    pid = parents.get(os.getpid())
+    while pid and pid not in seen:
+        seen.add(pid)
+        name = (_process_name(pid) or "").casefold()
+        if not name or name in SESSION_PROCESSES:
+            break
+        if name not in EDITOR_PROCESSES:
+            owners.add(pid)
+        pid = parents.get(pid)
+    found = []
+
+    def collect(hwnd, _):
+        if win32process.GetWindowThreadProcessId(hwnd)[1] in owners:
+            found.append(hwnd)
+        return True
+
+    if owners:
+        win32gui.EnumWindows(collect, None)
     return found
 
 
