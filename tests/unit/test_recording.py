@@ -71,16 +71,40 @@ class FakeWindows:
         self.owner = 0
         self.foreground = 0
         self.windows: dict[int, dict] = {}
+        self.parents: dict[int, int] = {}
+        self.names: dict[int, str] = {}
         self.shown: list[tuple[int, int]] = []
 
-    def add(self, hwnd, cls="ConsoleWindowClass", visible=True, iconic=False, title="T", rect=None):
+    def add(
+        self,
+        hwnd,
+        cls="ConsoleWindowClass",
+        visible=True,
+        iconic=False,
+        title="T",
+        rect=None,
+        pid=0,
+    ):
         self.windows[hwnd] = {
+            "pid": pid,
             "cls": cls,
             "visible": visible,
             "iconic": iconic,
             "title": title,
             "rect": rect or (100, 100, 900, 700),
         }
+
+    def chain(self, *names):
+        """Our ancestors, parent first: pid 101, 102, ... named `names`."""
+        child = recording.os.getpid()
+        for pid, name in enumerate(names, 101):
+            self.parents[child], self.names[pid] = pid, name
+            child = pid
+
+    def enum(self, callback, extra):
+        for hwnd in list(self.windows):
+            if callback(hwnd, extra) is False:
+                return
 
     def show(self, hwnd, how):
         self.shown.append((hwnd, how))
@@ -101,6 +125,14 @@ def fake_windows(monkeypatch):
     monkeypatch.setattr(gui, "GetWindowText", lambda hwnd: fake.windows[hwnd]["title"])
     monkeypatch.setattr(gui, "GetWindowRect", lambda hwnd: fake.windows[hwnd]["rect"])
     monkeypatch.setattr(gui, "ShowWindow", fake.show)
+    monkeypatch.setattr(gui, "EnumWindows", fake.enum)
+    monkeypatch.setattr(
+        recording.win32process,
+        "GetWindowThreadProcessId",
+        lambda hwnd: (0, fake.windows[hwnd]["pid"]),
+    )
+    monkeypatch.setattr(recording.apps, "_parents", lambda: fake.parents)
+    monkeypatch.setattr(recording, "_process_name", fake.names.get)
     return fake
 
 
@@ -540,6 +572,43 @@ def test_a_window_found_twice_is_minimized_once(fake_windows):
     fake_windows.add(4)
     fake_windows.console = fake_windows.owner = fake_windows.foreground = 4
     assert REAL_CONSOLE_WINDOWS(exclude=0) == [4]
+
+
+@pytest.mark.windows("the console windows record minimizes (win32console)")
+def test_with_no_terminal_the_app_that_launched_us_is_minimized(fake_windows):
+    fake_windows.chain("cmd.exe", "claude.exe", "claude.exe", "sihost.exe", "explorer.exe")
+    fake_windows.add(10, cls="Chrome_WidgetWin_1", title="Claude", pid=103)
+    fake_windows.add(11, cls="Chrome_WidgetWin_1", visible=False, pid=103)
+    fake_windows.add(12, cls="Shell_TrayWnd", pid=105)
+    fake_windows.add(13, cls="OpusApp", title="Document1 - Word", pid=999)
+    assert REAL_CONSOLE_WINDOWS(exclude=0) == [10]
+
+
+@pytest.mark.windows("the console windows record minimizes (win32console)")
+def test_the_walk_stops_at_the_session_shell(fake_windows):
+    fake_windows.chain("cmd.exe", "sihost.exe", "claude.exe")
+    fake_windows.add(10, cls="Chrome_WidgetWin_1", pid=103)
+    assert REAL_CONSOLE_WINDOWS(exclude=0) == []
+    fake_windows.names[102] = "explorer.exe"
+    assert REAL_CONSOLE_WINDOWS(exclude=0) == []
+
+
+@pytest.mark.windows("the console windows record minimizes (win32console)")
+def test_vs_code_that_launched_us_is_left_alone(fake_windows):
+    fake_windows.chain("powershell.exe", "Code.exe", "Code.exe", "explorer.exe")
+    fake_windows.add(10, cls="Chrome_WidgetWin_1", title="VS Code", pid=102)
+    fake_windows.add(11, cls="Chrome_WidgetWin_1", title="VS Code", pid=103)
+    assert REAL_CONSOLE_WINDOWS(exclude=0) == []
+
+
+@pytest.mark.windows("the console windows record minimizes (win32console)")
+def test_the_launcher_is_not_the_target_and_waits_behind_a_terminal(fake_windows):
+    fake_windows.chain("claude.exe", "sihost.exe")
+    fake_windows.add(10, cls="Chrome_WidgetWin_1", pid=101)
+    assert REAL_CONSOLE_WINDOWS(exclude=10) == []
+    fake_windows.add(2, cls="CASCADIA_HOSTING_WINDOW_CLASS")
+    fake_windows.foreground = 2
+    assert REAL_CONSOLE_WINDOWS(exclude=0) == [2]
 
 
 @pytest.mark.windows("the console windows record minimizes (win32console)")

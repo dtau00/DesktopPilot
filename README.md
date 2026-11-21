@@ -283,7 +283,9 @@ that a cover is meant.
   a folder part is used as given. `gif` without `-o` writes beside its source.
 - The terminal `pilot` runs in is minimized at `start` so it is not in the
   video (`minimized_windows`), and `stop` restores it without taking the
-  focus. `--follow` leaves it alone.
+  focus. `--follow` leaves it alone. With no terminal on screen, the window
+  of the app that launched `pilot` (the Claude desktop app) is minimized
+  instead; VS Code never is.
 - The mic is off. `--mic DEVICE` adds a DirectShow microphone; list the names
   with `ffmpeg -list_devices true -f dshow -i dummy`.
 - `start` returns once ffmpeg is writing the file. ffmpeg runs under a detached
